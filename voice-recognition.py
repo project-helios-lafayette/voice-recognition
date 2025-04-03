@@ -1,71 +1,51 @@
-import sounddevice as sd
-import numpy as np
 import whisper
 import torch
+import numpy as np
+import sounddevice as sd
 import queue
 
-# Check device availability
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using device: {device}")
+# Load the model
+model = whisper.load_model("base")  # Use a smaller model for real-time performance
 
-# Load the Whisper model
-model = whisper.load_model("turbo").to(device)
-
-# Audio settings
-CHUNK = 1024  # Small chunk size for low latency
-FORMAT = np.int16
+# Audio capture parameters
+SAMPLE_RATE = 16000  # Whisper works best with 16kHz audio
+BLOCK_SIZE = 1024  # Adjust for latency/performance balance
 CHANNELS = 1
-RATE = 44100
 
-# Queue to store incoming audio chunks
+# Queue to hold incoming audio data
 audio_queue = queue.Queue()
 
-# Callback function to continuously stream audio
+
 def audio_callback(indata, frames, time, status):
+    """Callback function to receive live audio and put it in the queue."""
     if status:
-        print(status, flush=True)
+        print(status)
     audio_queue.put(indata.copy())
-    print("Audio chunk added to queue")
 
-# Function to process audio from queue and transcribe in real time
-def transcribe_stream():
-    print("Listening...")
-    buffer = np.array([], dtype=np.float32)
 
-    with sd.InputStream(samplerate=RATE, channels=CHANNELS, dtype="int16", callback=audio_callback):
+# Start streaming audio from the microphone
+with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32',
+                    blocksize=BLOCK_SIZE, callback=audio_callback):
+    print("Listening... (Press Ctrl+C to stop)")
+
+    try:
         while True:
-            try:
-                # Retrieve and normalize new audio chunk
-                chunk = audio_queue.get()
-                print("Audio chunk retrieved from queue")
-                chunk = chunk.astype(np.float32) / 32768.0  # Convert to float32
+            # Get audio from the queue
+            audio_data = audio_queue.get()
+            audio_data = audio_data.flatten()  # Convert from 2D array to 1D
 
-                # Append to buffer
-                buffer = np.concatenate((buffer, chunk.flatten()))
-                print(f"Buffer size: {len(buffer)}")
+            # Pad/trim to ensure Whisper gets a fixed-length input
+            audio_data = whisper.pad_or_trim(audio_data)
 
-                # Transcribe every 3 seconds of audio
-                if len(buffer) >= RATE * 3:
-                    print("Transcribing...")
-                    mel = whisper.log_mel_spectrogram(buffer, n_mels=model.dims.n_mels).to(model.device)
+            # Convert to log-Mel spectrogram
+            mel = whisper.log_mel_spectrogram(audio_data).to(model.device)
 
-                    # Detect the spoken language
-                    _, probs = model.detect_language(mel)
-                    print(f"Detected language: {max(probs, key=probs.get)}")
+            # Transcribe the audio with the specified language
+            options = whisper.DecodingOptions(language="en")  # Set the language here
+            result = whisper.decode(model, mel, options)
 
-                    # Decode the audio
-                    options = whisper.DecodingOptions()
-                    result = whisper.decode(model, mel, options)
+            # Print the transcription
+            print("Transcription:", result.text)
 
-                    # Print the recognized text
-                    print(result.text)
-
-                    # Clear buffer after processing
-                    buffer = np.array([], dtype=np.float32)
-
-            except KeyboardInterrupt:
-                print("Stopping...")
-                break
-
-# Start real-time transcription
-transcribe_stream()
+    except KeyboardInterrupt:
+        print("\nStopped listening.")
