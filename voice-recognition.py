@@ -1,68 +1,61 @@
 import sounddevice as sd
 import numpy as np
 import whisper
-import wave
-import io
 import torch
+import queue
 
-# Print the CUDA and PyTorch versions
-print(f"CUDA version: {torch.version.cuda}")
-print(f"PyTorch version: {torch.__version__}")
-
-# Check if CUDA is available and set the device
+# Check device availability
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
-# Print CUDA device information
-if torch.cuda.is_available():
-    print(f"CUDA is available: {torch.cuda.is_available()}")
-    print(f"Number of CUDA devices: {torch.cuda.device_count()}")
-    print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
-
-model = whisper.load_model("small").to(device)
+# Load a faster Whisper model
+model = whisper.load_model("base").to(device)  # Try "tiny" for even faster results
 
 # Audio settings
-CHUNK = 1024
-FORMAT = 'int16'  # 16 bit audio
+CHUNK = 1024  # Small chunk size for low latency
+FORMAT = np.int16
 CHANNELS = 1
 RATE = 44100
-DURATION = 4  # seconds
 
-# List available audio devices
-print("Available audio devices:")
-print(sd.query_devices())
+# Queue to store incoming audio chunks
+audio_queue = queue.Queue()
 
-# Select the desired device by index
-device_index = int(input("Select device index: "))
 
-def record_and_transcribe():
-    print("Recording...")
-    # Record audio
-    audio_data = sd.rec(int(RATE * DURATION), samplerate=RATE, channels=CHANNELS, dtype=FORMAT, device=device_index)
-    sd.wait()  # Wait until recording is finished
+# Callback function to continuously stream audio
+def audio_callback(indata, frames, time, status):
+    if status:
+        print(status, flush=True)
+    audio_queue.put(indata.copy())
 
-    with io.BytesIO() as wav_buffer:
-        with wave.open(wav_buffer, 'wb') as wf:
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(2)
-            wf.setframerate(RATE)
-            wf.writeframes(audio_data.tobytes())
 
-        wav_buffer.seek(0)
-        # Read the audio data from the buffer and convert it to a NumPy array
-        wav_buffer.seek(0)
-        audio_data = np.frombuffer(wav_buffer.read(), dtype=np.int16)
+# Function to process audio from queue and transcribe in real time
+def transcribe_stream():
+    print("Listening...")
+    buffer = np.array([], dtype=np.float32)
 
-    # Convert audio data to float32
-    audio_data = audio_data.astype(np.float32) / 32768.0
+    with sd.InputStream(samplerate=RATE, channels=CHANNELS, dtype="int16", callback=audio_callback):
+        while True:
+            try:
+                # Retrieve and normalize new audio chunk
+                chunk = audio_queue.get()
+                chunk = chunk.astype(np.float32) / 32768.0  # Convert to float32
 
-    # Transcribe the audio with Whisper
-    print("Transcribing...")
-    result = model.transcribe(audio=audio_data)
+                # Append to buffer
+                buffer = np.concatenate((buffer, chunk.flatten()))
 
-    print("Transcription:")
-    print(result['text'])
+                # Transcribe every 3 seconds of audio
+                if len(buffer) >= RATE * 3:
+                    print("Transcribing...")
+                    result = model.transcribe(buffer, fp16=False)  # Disable fp16 if using CPU
+                    print("Transcription:", result['text'])
 
-# Call the function to record and transcribe
-while True:
-    record_and_transcribe()
+                    # Clear buffer after processing
+                    buffer = np.array([], dtype=np.float32)
+
+            except KeyboardInterrupt:
+                print("Stopping...")
+                break
+
+
+# Start real-time transcription
+transcribe_stream()
