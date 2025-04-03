@@ -1,7 +1,23 @@
 import whisper
 import os
+import torch
 
-model = whisper.load_model("turbo")
+# Print the CUDA and PyTorch versions
+print(f"CUDA version: {torch.version.cuda}")
+print(f"PyTorch version: {torch.__version__}")
+
+# Check if CUDA is available and set the device
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+# Print CUDA device information
+if torch.cuda.is_available():
+    print(f"CUDA is available: {torch.cuda.is_available()}")
+    print(f"Number of CUDA devices: {torch.cuda.device_count()}")
+    print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+
+
+model = whisper.load_model("turbo").to(device)
 
 audio_path = os.path.expanduser("~/audio.wav")
 
