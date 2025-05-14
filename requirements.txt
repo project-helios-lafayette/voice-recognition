@@ -12,3 +12,5 @@ numpy
 #-f https://nvidia.box.com/shared/static/zvultzsmd4iuheykxy17s4l2n91ylpl8.whl
 #-f https://nvidia.box.com/shared/static/9si945yrzesspmg9up4ys380lqxjylc3.whl
 #-f https://nvidia.box.com/shared/static/u0ziu01c0kyji4zz3gxam79181nebylf.whl
+torch~=2.3.0
+soundfile~=0.13.1

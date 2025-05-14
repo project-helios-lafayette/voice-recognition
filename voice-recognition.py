@@ -1,51 +1,47 @@
 import whisper
-import torch
-import numpy as np
 import sounddevice as sd
-import queue
+import soundfile as sf
+import tempfile
+import os
+import time
+import torch
 
-# Load the model
-model = whisper.load_model("base")  # Use a smaller model for real-time performance
-
-# Audio capture parameters
-SAMPLE_RATE = 16000  # Whisper works best with 16kHz audio
-BLOCK_SIZE = 1024  # Adjust for latency/performance balance
+# Parameters
+SAMPLE_RATE = 16000
 CHANNELS = 1
+DURATION = 5  # seconds
 
-# Queue to hold incoming audio data
-audio_queue = queue.Queue()
+# Print the CUDA and PyTorch versions
+print(f"CUDA version: {torch.version.cuda}")
+print(f"PyTorch version: {torch.__version__}")
+
+# Check if CUDA is available and set the device
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+# Print CUDA device information
+if torch.cuda.is_available():
+    print(f"CUDA is available: {torch.cuda.is_available()}")
+    print(f"Number of CUDA devices: {torch.cuda.device_count()}")
+    print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
 
 
-def audio_callback(indata, frames, time, status):
-    """Callback function to receive live audio and put it in the queue."""
-    if status:
-        print(status)
-    audio_queue.put(indata.copy())
+model = whisper.load_model("base").to(device)
 
+try:
+    while True:
+        print("Recording for", DURATION, "seconds...")
+        audio = sd.rec(int(DURATION * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32')
+        sd.wait()
 
-# Start streaming audio from the microphone
-with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32',
-                    blocksize=BLOCK_SIZE, callback=audio_callback):
-    print("Listening... (Press Ctrl+C to stop)")
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
+            sf.write(tmpfile.name, audio, SAMPLE_RATE)
+            temp_wav_path = tmpfile.name
 
-    try:
-        while True:
-            # Get audio from the queue
-            audio_data = audio_queue.get()
-            audio_data = audio_data.flatten()  # Convert from 2D array to 1D
+        result = model.transcribe(temp_wav_path, language="en")
+        print("Transcription:", result["text"])
 
-            # Pad/trim to ensure Whisper gets a fixed-length input
-            audio_data = whisper.pad_or_trim(audio_data)
-
-            # Convert to log-Mel spectrogram
-            mel = whisper.log_mel_spectrogram(audio_data).to(model.device)
-
-            # Transcribe the audio with the specified language
-            options = whisper.DecodingOptions(language="en")  # Set the language here
-            result = whisper.decode(model, mel, options)
-
-            # Print the transcription
-            print("Transcription:", result.text)
-
-    except KeyboardInterrupt:
-        print("\nStopped listening.")
+        os.remove(temp_wav_path)
+        time.sleep(1)  # Optional: pause before next recording
+except KeyboardInterrupt:
+    print("Stopped by user.")
